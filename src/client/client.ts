@@ -1,4 +1,4 @@
-import { createCache } from '../cache/cache';
+import { CacheStore, SuspenseCacheStore, RequestStore } from '../store';
 import {
   Action,
   Client,
@@ -7,24 +7,24 @@ import {
   RequestInterceptor,
   ResponseInterceptor,
   ResponseType,
-  SuspenseCacheItem,
 } from './client.types';
 import { QueryError } from './errors/QueryError';
 
 export type HandleRequestInterceptors<R> = (
   action: Action<any, R>,
-  interceptors: Array<RequestInterceptor<R>>,
+  interceptors: RequestInterceptor<R>[],
 ) => Promise<Action<any, R>>;
 
 export type HandleResponseInterceptors<R> = (
   action: Action<any, R>,
   response: QueryResponse<any>,
-  interceptors: Array<ResponseInterceptor<R, any>>,
+  interceptors: ResponseInterceptor<R, any>[],
 ) => Promise<QueryResponse<any>>;
 
-export const createClient = <R = any>(clientOptions: ClientOptions<R> = {}) => {
-  const cache = clientOptions.cacheProvider;
-  const suspenseCache = createCache<SuspenseCacheItem>(() => true, () => true);
+export const createClient = <R = any>(clientOptions: ClientOptions<R> = {}): Client => {
+  const cacheStore = new CacheStore();
+  const suspenseCacheStore = new SuspenseCacheStore();
+  const requestStore = new RequestStore();
 
   const handleRequestInterceptors: HandleRequestInterceptors<R> = async (action, interceptors) => {
     const [interceptor, ...next] = interceptors;
@@ -41,19 +41,20 @@ export const createClient = <R = any>(clientOptions: ClientOptions<R> = {}) => {
   };
 
   const client = {
-    cache,
+    cache: cacheStore,
+    suspenseCache: suspenseCacheStore,
     query: async <T>(actionInit: Action<T, R>, skipCache = false): Promise<QueryResponse<T>> => {
       try {
-        const action = await handleRequestInterceptors(actionInit, clientOptions.requestInterceptors || []);
-        const { endpoint, body, responseType, ...options } = action;
-
-        if (cache && !skipCache) {
-          const cachedResponse = cache.get(actionInit);
+        if (!skipCache) {
+          const cachedResponse = cacheStore.getResponse(actionInit);
 
           if (cachedResponse) {
             return cachedResponse;
           }
         }
+
+        const action = await handleRequestInterceptors(actionInit, clientOptions.requestInterceptors || []);
+        const { endpoint, body, responseType, ...options } = action;
 
         let headers = options.headers;
 
@@ -62,29 +63,38 @@ export const createClient = <R = any>(clientOptions: ClientOptions<R> = {}) => {
         }
 
         const shouldStringify = headers && headers['Content-Type'] && headers['Content-Type'].indexOf('json') !== -1;
+        const shouldStartNewRequest = !requestStore.has(actionInit);
         const fetchFunction = clientOptions.fetch || fetch;
 
-        const response = await fetchFunction(endpoint, {
-          ...options,
-          body: body ? (shouldStringify ? JSON.stringify(body) : body) : undefined,
-          headers,
-          responseType,
-        });
+        if (shouldStartNewRequest) {
+          requestStore.add(
+            actionInit,
+            fetchFunction(endpoint, {
+              ...options,
+              body: body ? (shouldStringify ? JSON.stringify(body) : body) : undefined,
+              headers,
+              responseType,
+            }).then(async (response) => {
+              const payload = await resolveResponse(response, responseType);
+
+              return { response, payload };
+            }),
+            { removeTimeout: clientOptions?.dedupingInterval ?? 2000, removeOnError: true },
+          );
+        }
+
+        const { response, payload } = await requestStore.get(actionInit);
 
         const queryResponse = await handleResponseInterceptors(
           action,
           {
             error: !response.ok,
             headers: response.headers,
-            payload: await resolveResponse(response, responseType),
+            payload,
             status: response.status,
           },
           clientOptions.responseInterceptors || [],
         );
-
-        if (cache && response.ok) {
-          cache.add(actionInit, queryResponse);
-        }
 
         if (
           queryResponse.status &&
@@ -95,6 +105,10 @@ export const createClient = <R = any>(clientOptions: ClientOptions<R> = {}) => {
           throw new QueryError('request-error', queryResponse);
         }
 
+        if (response.ok && actionInit.method === 'GET') {
+          cacheStore.setResponse(actionInit, queryResponse);
+        }
+
         return queryResponse;
       } catch (error) {
         return {
@@ -103,7 +117,6 @@ export const createClient = <R = any>(clientOptions: ClientOptions<R> = {}) => {
         };
       }
     },
-    suspenseCache,
   };
 
   return client;

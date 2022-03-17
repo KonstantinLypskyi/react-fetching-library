@@ -1,5 +1,5 @@
 import { useContext, useEffect, useState } from 'react';
-import { convertActionToBase64, createCache } from '../../cache/cache';
+import { convertActionKey } from '../../utils';
 import { Action, QueryResponse } from '../../client/client.types';
 import { QueryError } from '../../client/errors/QueryError';
 import { ClientContext } from '../../context/clientContext/clientContext';
@@ -17,7 +17,7 @@ export const useSuspenseQuery = <T, R = any>(action: Action<T, R>) => {
     return () => {
       clientContext.suspenseCache.remove(action);
     };
-  }, [convertActionToBase64(action)]);
+  }, [convertActionKey(action)]);
 
   const forceQuery = () => {
     clientContext.suspenseCache.remove(action);
@@ -39,7 +39,7 @@ export const useSuspenseQuery = <T, R = any>(action: Action<T, R>) => {
     throw cacheItem.fetch;
   }
 
-  const fetch = clientContext.query(action, flag !== null).then(res => {
+  const fetch = clientContext.query(action, flag !== null).then((res) => {
     clientContext.suspenseCache.add(action, {
       fetch,
       response: res,
