@@ -33,7 +33,11 @@ Simple and powerful fetching library for React. Use hooks to fetch data!
 
 ✅ Less than 3k minizipped
 
-✅ Simple cache provider - easily to extend
+✅ Simple work with cache
+
+✅ Request deduplication
+
+✅ Poll Interval
 
 ✅ Handle race conditions
 
